@@ -171,6 +171,188 @@
   }
 
   // =========================================================================
+  // DURABLE STORAGE LAYER — IndexedDB first, then localStorage, then memory.
+  //
+  // The browser-side copy of the Hub (dimensions cache, likes, form draft)
+  // lives in IndexedDB: it survives normal browsing, holds hundreds of MB
+  // (screenshots are stored as data URLs, which blow past localStorage's
+  // ~5MB quota fast), and is far more robust than cookie-adjacent storage.
+  //
+  // The PERMANENT home of the Hub is the server's data/dimensions.json file:
+  // even if a visitor wipes all browser storage, the full Hub is re-fetched
+  // from the server on the next load (see initAndSyncSharedHub).
+  // =========================================================================
+  const IDB_NAME = '20w14infinite-hub';
+  const IDB_VERSION = 1;
+  const IDB_STORE = 'kv';
+  const IDB_KEY_DIMENSIONS = 'dimensions';
+  const IDB_KEY_LIKED = 'likedIds';
+  const IDB_KEY_DRAFT = 'formDraft';
+
+  let idbConnection = null;
+
+  function openIdb() {
+    if (idbConnection) return idbConnection;
+    idbConnection = new Promise((resolve) => {
+      let settled = false;
+      const fail = () => {
+        if (settled) return;
+        settled = true;
+        resolve(null); // null = IndexedDB unavailable → use fallbacks
+      };
+      try {
+        if (typeof indexedDB === 'undefined' || !indexedDB) return fail();
+        const req = indexedDB.open(IDB_NAME, IDB_VERSION);
+        req.onupgradeneeded = () => {
+          const db = req.result;
+          if (!db.objectStoreNames.contains(IDB_STORE)) {
+            db.createObjectStore(IDB_STORE);
+          }
+        };
+        req.onsuccess = () => {
+          if (settled) return;
+          settled = true;
+          const db = req.result;
+          db.onversionchange = () => {
+            try { db.close(); } catch (_) {}
+          };
+          resolve(db);
+        };
+        req.onerror = fail;
+        req.onblocked = fail;
+      } catch (_) {
+        fail();
+      }
+    });
+    return idbConnection;
+  }
+
+  function idbRun(mode, operation) {
+    return openIdb().then(
+      (db) =>
+        new Promise((resolve, reject) => {
+          if (!db) {
+            reject(new Error('IndexedDB unavailable'));
+            return;
+          }
+          let tx;
+          try {
+            tx = db.transaction(IDB_STORE, mode);
+          } catch (e) {
+            reject(e);
+            return;
+          }
+          let request;
+          try {
+            request = operation(tx.objectStore(IDB_STORE));
+          } catch (e) {
+            reject(e);
+            return;
+          }
+          if (request && request.onerror) {
+            request.onerror = () => reject(request.error);
+          }
+          tx.oncomplete = () => resolve(request ? request.result : undefined);
+          tx.onabort = () => reject(tx.error || new Error('IndexedDB transaction aborted'));
+          tx.onerror = () => reject(tx.error || new Error('IndexedDB transaction failed'));
+        })
+    );
+  }
+
+  function idbGet(key) {
+    return idbRun('readonly', (store) => store.get(key));
+  }
+
+  function idbSet(key, value) {
+    return idbRun('readwrite', (store) => store.put(value, key));
+  }
+
+  function idbDelete(key) {
+    return idbRun('readwrite', (store) => store.delete(key));
+  }
+
+  // ---- localStorage / memory fallbacks (used only if IndexedDB fails) ----
+  function lsGetJson(key) {
+    try {
+      const raw = localStorage.getItem(key);
+      return raw === null ? undefined : JSON.parse(raw);
+    } catch (_) {
+      return undefined;
+    }
+  }
+
+  function lsSetJson(key, value) {
+    try {
+      localStorage.setItem(key, JSON.stringify(value));
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function lsRemove(key) {
+    try {
+      localStorage.removeItem(key);
+    } catch (_) {}
+  }
+
+  const memoryStore = new Map();
+  // All writes are serialized through one promise chain so a slow earlier
+  // write can never overwrite the result of a newer one.
+  let storageWriteChain = Promise.resolve();
+  let warnedStorageFallback = false;
+
+  async function storageGet(key) {
+    try {
+      const value = await idbGet(key);
+      if (value !== undefined) return value;
+    } catch (_) {
+      // IndexedDB unavailable — fall through to the next tier.
+    }
+    const lsValue = lsGetJson(key);
+    if (lsValue !== undefined) return lsValue;
+    return memoryStore.has(key) ? memoryStore.get(key) : undefined;
+  }
+
+  function storageSet(key, value) {
+    storageWriteChain = storageWriteChain.then(async () => {
+      let savedToIdb = false;
+      try {
+        await idbSet(key, value);
+        savedToIdb = true;
+      } catch (_) {}
+      if (savedToIdb) {
+        // The IndexedDB copy is authoritative — drop any stale localStorage
+        // copy so old data can never resurrect itself over newer data.
+        lsRemove(key);
+        return;
+      }
+      if (lsSetJson(key, value)) {
+        if (!warnedStorageFallback) {
+          warnedStorageFallback = true;
+          console.warn(
+            '20w14infinite-Hub: IndexedDB is unavailable — falling back to localStorage.'
+          );
+        }
+        return;
+      }
+      memoryStore.set(key, value);
+    });
+    return storageWriteChain;
+  }
+
+  function storageDelete(key) {
+    storageWriteChain = storageWriteChain.then(async () => {
+      try {
+        await idbDelete(key);
+      } catch (_) {}
+      lsRemove(key);
+      memoryStore.delete(key);
+    });
+    return storageWriteChain;
+  }
+
+  // =========================================================================
   // SHARED SERVER STORAGE + LOCAL CACHE SYNC
   // =========================================================================
   function normalizeDimensionItem(item) {
@@ -197,65 +379,87 @@
     };
   }
 
-  function loadLocalCache() {
+  async function loadCachedDimensions() {
     const seenIds = new Set();
     const merged = [];
-
-    const readKey = (key) => {
-      try {
-        const raw = localStorage.getItem(key);
-        if (!raw) return [];
-        const parsed = JSON.parse(raw);
-        return Array.isArray(parsed) ? parsed : [];
-      } catch (_) {
-        return [];
+    const pushAll = (list) => {
+      if (!Array.isArray(list)) return;
+      for (const item of list) {
+        if (!item || !item.id || PRESET_IDS.has(item.id)) continue;
+        if (seenIds.has(item.id)) continue;
+        seenIds.add(item.id);
+        merged.push(normalizeDimensionItem(item));
       }
     };
 
-    const allStored = [
-      ...readKey(STORAGE_KEY_DIMENSIONS),
-      ...LEGACY_KEYS.flatMap((k) => readKey(k))
-    ];
-
-    for (const item of allStored) {
-      if (!item || !item.id || PRESET_IDS.has(item.id)) continue;
-      if (seenIds.has(item.id)) continue;
-      seenIds.add(item.id);
-      merged.push(normalizeDimensionItem(item));
+    let idbOk = true;
+    let idbList;
+    try {
+      idbList = await idbGet(IDB_KEY_DIMENSIONS);
+    } catch (_) {
+      idbOk = false;
     }
 
-    LEGACY_KEYS.forEach((k) => {
-      try {
-        localStorage.removeItem(k);
-      } catch (_) {}
-    });
+    let migratedFromLocalStorage = false;
 
-    saveLocalCache(merged);
-    return merged;
+    if (idbOk) {
+      pushAll(idbList);
+      // One-time rescue: older versions of the Hub kept dimensions in
+      // localStorage — import them into IndexedDB, then clear the old keys.
+      const legacyLists = [
+        lsGetJson(STORAGE_KEY_DIMENSIONS),
+        ...LEGACY_KEYS.map((k) => lsGetJson(k))
+      ];
+      const hadLegacyData = legacyLists.some((l) => Array.isArray(l) && l.length > 0);
+      legacyLists.forEach(pushAll);
+      if (hadLegacyData) {
+        migratedFromLocalStorage = true;
+        storageSet(IDB_KEY_DIMENSIONS, merged);
+        lsRemove(STORAGE_KEY_DIMENSIONS);
+        LEGACY_KEYS.forEach(lsRemove);
+      } else if (idbList === undefined) {
+        // First ever run with IndexedDB — establish the durable store.
+        storageSet(IDB_KEY_DIMENSIONS, merged);
+      }
+    } else {
+      // IndexedDB unavailable: keep the legacy localStorage behaviour.
+      pushAll(lsGetJson(STORAGE_KEY_DIMENSIONS));
+      LEGACY_KEYS.forEach((k) => pushAll(lsGetJson(k)));
+      lsSetJson(STORAGE_KEY_DIMENSIONS, merged);
+      LEGACY_KEYS.forEach(lsRemove);
+    }
+
+    return { list: merged, migratedFromLocalStorage };
   }
 
   function saveLocalCache(list) {
     const cleanList = (Array.isArray(list) ? list : [])
       .filter((item) => item && !PRESET_IDS.has(item.id))
       .map(normalizeDimensionItem);
-    try {
-      localStorage.setItem(STORAGE_KEY_DIMENSIONS, JSON.stringify(cleanList));
-    } catch (_) {}
+    storageSet(IDB_KEY_DIMENSIONS, cleanList);
   }
 
-  function loadLikedIds() {
+  async function loadLikedIds() {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY_LIKED);
-      if (raw) likedIds = new Set(JSON.parse(raw));
+      let stored = await storageGet(IDB_KEY_LIKED);
+      // One-time rescue of likes saved under the old localStorage key.
+      const legacyLiked = lsGetJson(STORAGE_KEY_LIKED);
+      if (!Array.isArray(stored) && Array.isArray(legacyLiked)) {
+        stored = legacyLiked;
+      }
+      if (legacyLiked !== undefined) lsRemove(STORAGE_KEY_LIKED);
+      if (Array.isArray(stored)) {
+        likedIds = new Set(stored.map((id) => String(id)));
+        // Mirror the value into IndexedDB (also migrates an old copy).
+        storageSet(IDB_KEY_LIKED, Array.from(likedIds));
+      }
     } catch (_) {
       likedIds = new Set();
     }
   }
 
   function saveLikedIds() {
-    try {
-      localStorage.setItem(STORAGE_KEY_LIKED, JSON.stringify(Array.from(likedIds)));
-    } catch (_) {}
+    storageSet(IDB_KEY_LIKED, Array.from(likedIds));
   }
 
   function saveFormDraft() {
@@ -271,35 +475,44 @@
       pendingImageUrl: imageUrlInput.value,
       nickname: nicknameInput.value
     };
-    try {
-      localStorage.setItem(STORAGE_KEY_DRAFT, JSON.stringify(draft));
-      if (draftStatusPill) draftStatusPill.textContent = 'Draft saved';
-    } catch (e) {
-      try {
-        localStorage.setItem(STORAGE_KEY_DRAFT, JSON.stringify({ ...draft, images: [] }));
-      } catch (_) {}
-    }
+    // Drafts (including pasted screenshots) persist to IndexedDB, which has
+    // plenty of room for them; the storage layer handles any fallback tier.
+    storageSet(IDB_KEY_DRAFT, draft);
+    if (draftStatusPill) draftStatusPill.textContent = 'Draft saved';
   }
 
-  function loadFormDraft() {
+  async function loadFormDraft() {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY_DRAFT);
-      return raw ? JSON.parse(raw) : null;
+      let draft = await storageGet(IDB_KEY_DRAFT);
+      if (!draft || typeof draft !== 'object') {
+        // One-time rescue of a draft saved under the old localStorage key.
+        const legacyDraft = lsGetJson(STORAGE_KEY_DRAFT);
+        if (legacyDraft && typeof legacyDraft === 'object') {
+          draft = legacyDraft;
+          storageSet(IDB_KEY_DRAFT, draft); // keep it durable in IndexedDB
+        }
+      }
+      lsRemove(STORAGE_KEY_DRAFT); // the old key is retired either way
+      return draft && typeof draft === 'object' ? draft : null;
     } catch (_) {
       return null;
     }
   }
 
   function clearFormDraft() {
-    try {
-      localStorage.removeItem(STORAGE_KEY_DRAFT);
-    } catch (_) {}
+    storageDelete(IDB_KEY_DRAFT);
   }
 
   async function initAndSyncSharedHub() {
-    const cached = loadLocalCache();
+    const { list: cached, migratedFromLocalStorage } = await loadCachedDimensions();
     dimensions = cached;
+
+    await loadLikedIds();
     renderHub();
+
+    if (migratedFromLocalStorage && cached.length > 0) {
+      showToast(`Storage upgraded — secured ${cached.length} dimension(s) in IndexedDB`);
+    }
 
     try {
       // Sync any locally cached dimensions up to the shared server database
@@ -710,12 +923,12 @@
     updateNicknameAvatarPreview();
   }
 
-  function openAddDimensionModal() {
+  async function openAddDimensionModal() {
     modalTitle.textContent = 'New Dimension';
     editingDimensionIdInput.value = '';
     formErrorBanner.hidden = true;
 
-    const draft = loadFormDraft();
+    const draft = await loadFormDraft();
     if (
       draft &&
       (draft.name ||
@@ -1327,7 +1540,6 @@
     });
   }
 
-  loadLikedIds();
   renderSelectedEntities();
   updateNicknameAvatarPreview();
   bindEvents();
