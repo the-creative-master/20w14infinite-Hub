@@ -7,6 +7,7 @@ const PORT = parseInt(process.env.PORT || '3000', 10);
 const HOST = '0.0.0.0';
 const DATA_DIR = path.join(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'dimensions.json');
+const ROOT_DIR = __dirname;
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
 const PRESET_IDS = new Set([
@@ -397,26 +398,38 @@ const server = http.createServer(async (req, res) => {
     }
 
     let safePath = path.normalize(pathname).replace(/^(\.\.[/\\])+/, '');
-    if (safePath === '/' || safePath === '\\') {
+    if (safePath === '/' || safePath === '\\' || safePath === '') {
       safePath = '/index.html';
     }
-    const filePath = path.join(PUBLIC_DIR, safePath);
 
-    if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
-      const ext = path.extname(filePath).toLowerCase();
-      const contentType = MIME_TYPES[ext] || 'application/octet-stream';
-      const content = fs.readFileSync(filePath);
-      res.writeHead(200, {
-        'Content-Type': contentType,
-        'Cache-Control': 'no-cache'
-      });
-      res.end(content);
-      return;
+    const candidateFiles = [
+      path.join(ROOT_DIR, safePath),
+      path.join(PUBLIC_DIR, safePath)
+    ];
+
+    const targetFilePath = candidateFiles.find(
+      (fp) => fs.existsSync(fp) && fs.statSync(fp).isFile()
+    );
+
+    if (targetFilePath) {
+      const ext = path.extname(targetFilePath).toLowerCase();
+      const baseName = path.basename(targetFilePath);
+      const isSensitive = baseName === 'server.js' || baseName === 'package.json';
+      if (MIME_TYPES[ext] && !isSensitive) {
+        const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+        const content = fs.readFileSync(targetFilePath);
+        res.writeHead(200, {
+          'Content-Type': contentType,
+          'Cache-Control': 'no-cache'
+        });
+        res.end(content);
+        return;
+      }
     }
 
-    const indexHtml = path.join(PUBLIC_DIR, 'index.html');
-    if (fs.existsSync(indexHtml)) {
-      const content = fs.readFileSync(indexHtml);
+    const rootIndexHtml = path.join(ROOT_DIR, 'index.html');
+    if (fs.existsSync(rootIndexHtml)) {
+      const content = fs.readFileSync(rootIndexHtml);
       res.writeHead(200, {
         'Content-Type': 'text/html; charset=utf-8',
         'Cache-Control': 'no-cache'
