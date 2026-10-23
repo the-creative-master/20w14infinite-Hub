@@ -17,6 +17,20 @@ const PRESET_IDS = new Set([
   'dim-diamond-abyss'
 ]);
 
+// Connected SSE clients for real-time updates across all visitors
+const sseClients = new Set();
+
+function broadcastUpdate(dimensions) {
+  const payload = `data: ${JSON.stringify({ type: 'dimensions', dimensions })}\n\n`;
+  for (const res of sseClients) {
+    try {
+      res.write(payload);
+    } catch (_) {
+      sseClients.delete(res);
+    }
+  }
+}
+
 function compute20w14InfiniteHash(bookText) {
   const normalized = String(bookText || '');
   const salted = `${normalized}:why_so_salty#LazyCrypto`;
@@ -83,6 +97,8 @@ function writeDimensions(dimensions) {
   const tmpFile = `${DATA_FILE}.tmp`;
   fs.writeFileSync(tmpFile, JSON.stringify(normalized, null, 2), 'utf8');
   fs.renameSync(tmpFile, DATA_FILE);
+  broadcastUpdate(normalized);
+  return normalized;
 }
 
 function sendJson(res, statusCode, payload) {
@@ -158,6 +174,22 @@ const server = http.createServer(async (req, res) => {
     const parsedUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
     const pathname = parsedUrl.pathname;
 
+    // Real-time Server-Sent Events stream for all connected browsers
+    if (pathname === '/api/stream' && req.method === 'GET') {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+        'Access-Control-Allow-Origin': '*'
+      });
+      res.write(`data: ${JSON.stringify({ type: 'dimensions', dimensions: readDimensions() })}\n\n`);
+      sseClients.add(res);
+      req.on('close', () => {
+        sseClients.delete(res);
+      });
+      return;
+    }
+
     if (pathname === '/api/hash' && req.method === 'GET') {
       const text = parsedUrl.searchParams.get('text') || '';
       const result = compute20w14InfiniteHash(text);
@@ -227,10 +259,15 @@ const server = http.createServer(async (req, res) => {
       });
 
       const dimensions = readDimensions();
-      dimensions.unshift(newDimension);
+      const existingIdx = dimensions.findIndex((d) => d.id === newDimension.id);
+      if (existingIdx !== -1) {
+        dimensions[existingIdx] = newDimension;
+      } else {
+        dimensions.unshift(newDimension);
+      }
       writeDimensions(dimensions);
 
-      sendJson(res, 201, { dimension: newDimension });
+      sendJson(res, 201, { dimension: newDimension, dimensions });
       return;
     }
 
@@ -273,7 +310,9 @@ const server = http.createServer(async (req, res) => {
         }
       }
 
-      writeDimensions(current);
+      if (addedCount > 0) {
+        writeDimensions(current);
+      }
       sendJson(res, 200, { dimensions: current, addedCount });
       return;
     }
@@ -291,7 +330,7 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'DELETE') {
         const removed = dimensions.splice(idx, 1)[0];
         writeDimensions(dimensions);
-        sendJson(res, 200, { deleted: removed.id });
+        sendJson(res, 200, { deleted: removed.id, dimensions });
         return;
       }
 
@@ -302,7 +341,7 @@ const server = http.createServer(async (req, res) => {
         if (body.action === 'like') {
           existing.likes = Math.max(0, (existing.likes || 0) + (body.delta === -1 ? -1 : 1));
           writeDimensions(dimensions);
-          sendJson(res, 200, { dimension: existing });
+          sendJson(res, 200, { dimension: existing, dimensions });
           return;
         }
 
@@ -352,7 +391,7 @@ const server = http.createServer(async (req, res) => {
 
         dimensions[idx] = updated;
         writeDimensions(dimensions);
-        sendJson(res, 200, { dimension: updated });
+        sendJson(res, 200, { dimension: updated, dimensions });
         return;
       }
     }
@@ -394,7 +433,6 @@ const server = http.createServer(async (req, res) => {
 });
 
 ensureDataFile();
-// Strip any presets if data/dimensions.json already existed
 writeDimensions(readDimensions());
 
 server.listen(PORT, HOST, () => {

@@ -171,7 +171,7 @@
   }
 
   // =========================================================================
-  // LOCALSTORAGE PERSISTENCE (PRIMARY SOURCE OF TRUTH)
+  // SHARED SERVER STORAGE + LOCAL CACHE SYNC
   // =========================================================================
   function normalizeDimensionItem(item) {
     const bookText = String(item.bookText || '').trim();
@@ -197,7 +197,7 @@
     };
   }
 
-  function loadLocalDimensions() {
+  function loadLocalCache() {
     const seenIds = new Set();
     const merged = [];
 
@@ -224,28 +224,23 @@
       merged.push(normalizeDimensionItem(item));
     }
 
-    // Clean up legacy keys and write unified non-preset list to STORAGE_KEY_DIMENSIONS
     LEGACY_KEYS.forEach((k) => {
       try {
         localStorage.removeItem(k);
       } catch (_) {}
     });
 
-    saveLocalDimensions(merged);
+    saveLocalCache(merged);
     return merged;
   }
 
-  function saveLocalDimensions(list) {
+  function saveLocalCache(list) {
     const cleanList = (Array.isArray(list) ? list : [])
       .filter((item) => item && !PRESET_IDS.has(item.id))
       .map(normalizeDimensionItem);
     try {
       localStorage.setItem(STORAGE_KEY_DIMENSIONS, JSON.stringify(cleanList));
-      return true;
-    } catch (err) {
-      console.warn('localStorage quota warning, compacting:', err);
-      return false;
-    }
+    } catch (_) {}
   }
 
   function loadLikedIds() {
@@ -278,13 +273,10 @@
     };
     try {
       localStorage.setItem(STORAGE_KEY_DRAFT, JSON.stringify(draft));
-      if (draftStatusPill) draftStatusPill.textContent = 'Saved to LocalStorage';
+      if (draftStatusPill) draftStatusPill.textContent = 'Draft saved';
     } catch (e) {
       try {
-        localStorage.setItem(
-          STORAGE_KEY_DRAFT,
-          JSON.stringify({ ...draft, images: [] })
-        );
+        localStorage.setItem(STORAGE_KEY_DRAFT, JSON.stringify({ ...draft, images: [] }));
       } catch (_) {}
     }
   }
@@ -304,41 +296,48 @@
     } catch (_) {}
   }
 
-  async function initDimensions() {
-    // 1. Load immediately from localStorage so UI is instant and authoritative
-    dimensions = loadLocalDimensions();
+  async function initAndSyncSharedHub() {
+    const cached = loadLocalCache();
+    dimensions = cached;
     renderHub();
 
-    // 2. Sync with backend in background without ever re-adding presets
     try {
+      // Sync any locally cached dimensions up to the shared server database
+      // and receive the full public list of dimensions from everyone
       const res = await fetch('/api/dimensions/sync', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ dimensions })
+        body: JSON.stringify({ dimensions: cached })
       });
       if (res.ok) {
         const data = await res.json();
-        const serverList = (Array.isArray(data.dimensions) ? data.dimensions : []).filter(
-          (d) => d && !PRESET_IDS.has(d.id)
-        );
-        // Merge any items from server that aren't in localStorage yet
-        const localIds = new Set(dimensions.map((d) => d.id));
-        let changed = false;
-        for (const sItem of serverList) {
-          if (!localIds.has(sItem.id)) {
-            dimensions.push(normalizeDimensionItem(sItem));
-            localIds.add(sItem.id);
-            changed = true;
-          }
-        }
-        if (changed) {
-          saveLocalDimensions(dimensions);
+        if (Array.isArray(data.dimensions)) {
+          dimensions = data.dimensions
+            .filter((d) => d && !PRESET_IDS.has(d.id))
+            .map(normalizeDimensionItem);
+          saveLocalCache(dimensions);
           renderHub();
         }
       }
-    } catch (_) {
-      // Offline / localStorage-only mode works seamlessly
-    }
+    } catch (_) {}
+
+    // Subscribe to real-time updates so when anyone creates/updates a dimension,
+    // everyone viewing the Hub sees it immediately
+    try {
+      const evtSource = new EventSource('/api/stream');
+      evtSource.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(event.data);
+          if (payload && Array.isArray(payload.dimensions)) {
+            dimensions = payload.dimensions
+              .filter((d) => d && !PRESET_IDS.has(d.id))
+              .map(normalizeDimensionItem);
+            saveLocalCache(dimensions);
+            renderHub();
+          }
+        } catch (_) {}
+      };
+    } catch (_) {}
   }
 
   // =========================================================================
@@ -419,7 +418,7 @@
       } else {
         emptyStateTitle.textContent = 'No dimensions stored yet';
         emptyStateDesc.textContent =
-          'Click below to add your first 20w14infinite dimension to the Hub.';
+          'Click below to publish the first 20w14infinite dimension to the Hub.';
         resetFiltersBtn.hidden = true;
       }
       return;
@@ -563,7 +562,7 @@
     saveLikedIds();
 
     dim.likes = Math.max(0, (dim.likes || 0) + delta);
-    saveLocalDimensions(dimensions);
+    saveLocalCache(dimensions);
     renderHub();
 
     try {
@@ -580,7 +579,7 @@
     if (!dim) return;
 
     dimensions = dimensions.filter((d) => d.id !== id);
-    saveLocalDimensions(dimensions);
+    saveLocalCache(dimensions);
     renderHub();
 
     if (!detailModal.hidden && activeDetailDimensionId === id) {
@@ -736,10 +735,10 @@
       imageUrlInput.value = draft.pendingImageUrl || '';
       nicknameInput.value = draft.nickname || 'Anonymous';
       updatePortalColorUI(draft.portalColor || '');
-      draftStatusPill.textContent = 'Restored from LocalStorage';
+      draftStatusPill.textContent = 'Draft restored';
     } else {
       resetPopupFormState();
-      draftStatusPill.textContent = 'Saved to LocalStorage';
+      draftStatusPill.textContent = 'Ready';
     }
 
     updateBookLivePreview();
@@ -782,7 +781,7 @@
   }
 
   // =========================================================================
-  // IMAGE PROCESSING (OPTIMIZED FOR LOCALSTORAGE)
+  // IMAGE PROCESSING
   // =========================================================================
   function processImageFile(file) {
     return new Promise((resolve, reject) => {
@@ -795,8 +794,8 @@
         const rawDataUrl = e.target.result;
         const img = new Image();
         img.onload = () => {
-          const maxW = 960;
-          const maxH = 540;
+          const maxW = 1024;
+          const maxH = 576;
           let { width, height } = img;
           if (width > maxW || height > maxH) {
             const ratio = Math.min(maxW / width, maxH / height);
@@ -808,7 +807,7 @@
           canvas.height = height;
           const ctx = canvas.getContext('2d');
           ctx.drawImage(img, 0, 0, width, height);
-          resolve(canvas.toDataURL('image/jpeg', 0.8));
+          resolve(canvas.toDataURL('image/jpeg', 0.82));
         };
         img.onerror = () => resolve(rawDataUrl);
         img.src = rawDataUrl;
@@ -835,12 +834,11 @@
   }
 
   // =========================================================================
-  // FORM SUBMIT (SAVES TO LOCALSTORAGE IMMEDIATELY)
+  // FORM SUBMIT (PUBLISHES TO SHARED SERVER HUB + LOCAL CACHE)
   // =========================================================================
   async function handleFormSubmit(e) {
     e.preventDefault();
 
-    // Automatically capture any pending text in the URL input or Entity input
     if (imageUrlInput.value.trim()) {
       formImages.push(imageUrlInput.value.trim());
       imageUrlInput.value = '';
@@ -901,17 +899,27 @@
             updatedAt: new Date().toISOString()
           });
         }
-        saveLocalDimensions(dimensions);
+        saveLocalCache(dimensions);
         renderHub();
-        closeAddDimensionModal();
-        showToast(`Saved "${name}" to LocalStorage`);
 
-        // Mirror to server in background
-        fetch(`/api/dimensions/${encodeURIComponent(editingId)}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(dimensions[idx])
-        }).catch(() => {});
+        try {
+          const res = await fetch(`/api/dimensions/${encodeURIComponent(editingId)}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+          if (res.ok) {
+            const data = await res.json();
+            if (Array.isArray(data.dimensions)) {
+              dimensions = data.dimensions.map(normalizeDimensionItem);
+              saveLocalCache(dimensions);
+              renderHub();
+            }
+          }
+        } catch (_) {}
+
+        closeAddDimensionModal();
+        showToast(`Updated "${name}"`);
       } else {
         const newDimension = normalizeDimensionItem({
           id: `dim-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
@@ -920,21 +928,30 @@
           createdAt: new Date().toISOString()
         });
 
-        // 1. Save immediately to LocalStorage
         dimensions.unshift(newDimension);
-        saveLocalDimensions(dimensions);
+        saveLocalCache(dimensions);
+        renderHub();
+
+        try {
+          const res = await fetch('/api/dimensions', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(newDimension)
+          });
+          if (res.ok) {
+            const data = await res.json();
+            if (Array.isArray(data.dimensions)) {
+              dimensions = data.dimensions.map(normalizeDimensionItem);
+              saveLocalCache(dimensions);
+              renderHub();
+            }
+          }
+        } catch (_) {}
+
         clearFormDraft();
         resetPopupFormState();
-        renderHub();
         closeAddDimensionModal();
-        showToast(`Saved "${name}" to LocalStorage`);
-
-        // 2. Mirror to server in background
-        fetch('/api/dimensions', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(newDimension)
-        }).catch(() => {});
+        showToast(`Published "${name}" to the Hub`);
       }
     } finally {
       submitBtn.disabled = false;
@@ -1290,20 +1307,18 @@
           showToast('No dimensions found in file');
           return;
         }
-        const existingIds = new Set(dimensions.map((d) => d.id));
-        let added = 0;
-        for (const item of list) {
-          if (!item || PRESET_IDS.has(item.id)) continue;
-          const norm = normalizeDimensionItem(item);
-          if (!existingIds.has(norm.id)) {
-            dimensions.unshift(norm);
-            existingIds.add(norm.id);
-            added++;
-          }
+        const res = await fetch('/api/dimensions/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ dimensions: list })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          dimensions = data.dimensions.map(normalizeDimensionItem);
+          saveLocalCache(dimensions);
+          renderHub();
+          showToast(`Imported ${data.addedCount} dimension(s)`);
         }
-        saveLocalDimensions(dimensions);
-        renderHub();
-        showToast(`Imported ${added} dimension(s) to LocalStorage`);
       } catch (_) {
         showToast('Invalid JSON file');
       } finally {
@@ -1316,5 +1331,5 @@
   renderSelectedEntities();
   updateNicknameAvatarPreview();
   bindEvents();
-  initDimensions();
+  initAndSyncSharedHub();
 })();
