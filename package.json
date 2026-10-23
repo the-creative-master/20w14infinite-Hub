@@ -1,0 +1,19 @@
+{
+  "name": "20w14infinite-hub",
+  "version": "1.0.0",
+  "description": "Community Hub to store and explore Minecraft 20w14∞ (20w14infinite) April Fools Update dimensions",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "keywords": [
+    "minecraft",
+    "20w14infinite",
+    "20w14∞",
+    "dimensions",
+    "april-fools",
+    "hub"
+  ],
+  "license": "MIT"
+}

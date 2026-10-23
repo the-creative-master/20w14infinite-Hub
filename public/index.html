@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>20w14∞ Hub — Infinite Dimensions Archive</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23121217'/><rect x='6' y='6' width='20' height='20' rx='5' fill='%238b5cf6' opacity='0.25'/><rect x='10' y='10' width='12' height='12' rx='3' fill='%23a855f7'/></svg>" />
+</head>
+<body>
+  <div class="ambient-glow" aria-hidden="true"></div>
+
+  <!-- Top Navigation -->
+  <header class="navbar">
+    <div class="navbar-inner">
+      <div class="brand" id="brandHomeBtn" role="button" tabindex="0">
+        <div class="brand-logo" aria-hidden="true">
+          <span class="brand-logo-core">∞</span>
+        </div>
+        <div class="brand-copy">
+          <div class="brand-name-row">
+            <span class="brand-name">20w14∞ Hub</span>
+            <span class="brand-badge">Public Archive</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="navbar-right">
+        <div class="autosave-indicator" title="Dimensions are shared publicly with everyone in real time">
+          <span class="pulse-dot"></span>
+          <span>Live Public Hub</span>
+        </div>
+
+        <button type="button" class="btn btn-ghost btn-sm" id="exportJsonBtn" title="Export JSON backup">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          <span>Export</span>
+        </button>
+
+        <label class="btn btn-ghost btn-sm" for="importJsonInput" title="Import JSON backup">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          <span>Import</span>
+          <input type="file" id="importJsonInput" accept=".json,application/json" hidden />
+        </label>
+
+        <button type="button" class="btn btn-primary" id="openAddModalTopBtn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          <span>Add Dimension</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Hub Content -->
+  <main class="container">
+    <!-- Hero Section -->
+    <section class="hero">
+      <div class="hero-main">
+        <div class="hero-eyebrow">Minecraft Snapshot 20w14infinite</div>
+        <h1 class="hero-title">Infinite Dimension Hub</h1>
+        <p class="hero-subtitle">
+          Discover and share worlds from Minecraft's 20w14∞ update. Record the dimension name, Book &amp; Quill phrase, screenshots, portal color, and entities for everyone to explore—no login required.
+        </p>
+        <div class="hero-actions">
+          <button type="button" class="btn btn-primary btn-lg" id="openAddModalHeroBtn">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            <span>Add New Dimension</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="hero-metrics">
+        <div class="metric-card">
+          <span class="metric-value" id="statTotalDimensions">0</span>
+          <span class="metric-label">Dimensions</span>
+        </div>
+        <div class="metric-card">
+          <span class="metric-value" id="statTotalImages">0</span>
+          <span class="metric-label">Screenshots</span>
+        </div>
+        <div class="metric-card">
+          <span class="metric-value" id="statUniqueEntities">0</span>
+          <span class="metric-label">Entities Logged</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Toolbar: Search & Sort -->
+    <section class="toolbar" aria-label="Search and sort dimensions">
+      <div class="search-field">
+        <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input
+          type="search"
+          id="searchInput"
+          placeholder="Search by dimension name, book text, entities, or player nickname..."
+          autocomplete="off"
+        />
+        <button type="button" class="search-clear" id="clearSearchBtn" hidden aria-label="Clear search">✕</button>
+      </div>
+
+      <div class="toolbar-controls">
+        <select id="sortSelect" class="select-input" aria-label="Sort dimensions">
+          <option value="newest">Newest First</option>
+          <option value="oldest">Oldest First</option>
+          <option value="likes">Most Liked</option>
+          <option value="book-az">Name (A–Z)</option>
+        </select>
+      </div>
+    </section>
+
+    <!-- Dimensions Grid -->
+    <section class="hub-grid-section" aria-live="polite">
+      <div id="dimensionsGrid" class="dimensions-grid"></div>
+
+      <div id="emptyHubState" class="empty-state" hidden>
+        <div class="empty-icon">
+          <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+        </div>
+        <h2 id="emptyStateTitle">No dimensions stored yet</h2>
+        <p id="emptyStateDesc">Click below to publish the first 20w14infinite dimension to the Hub.</p>
+        <div class="empty-actions">
+          <button type="button" class="btn btn-secondary" id="resetFiltersBtn" hidden>Clear Search</button>
+          <button type="button" class="btn btn-primary" id="openAddModalEmptyBtn">Add New Dimension</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ===================================================================== -->
+  <!-- POPUP MODAL: ADD / EDIT DIMENSION                                     -->
+  <!-- ===================================================================== -->
+  <div
+    id="addDimensionModal"
+    class="modal-backdrop"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="modalTitle"
+    hidden
+  >
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <div>
+          <h2 id="modalTitle">New Dimension</h2>
+          <p class="modal-subtitle">Fields marked with <span class="req-mark">*</span> are mandatory.</p>
+        </div>
+        <div class="modal-header-actions">
+          <span class="draft-pill" id="draftStatusPill">Ready</span>
+          <button type="button" class="icon-close-btn" id="closeAddModalBtn" aria-label="Close">✕</button>
+        </div>
+      </div>
+
+      <form id="dimensionForm" class="modal-body" novalidate>
+        <input type="hidden" id="editingDimensionId" value="" />
+
+        <div id="formErrorBanner" class="error-banner" role="alert" hidden></div>
+
+        <!-- MANDATORY FIELDS -->
+        <div class="form-group-block">
+          <div class="block-header">
+            <span class="block-tag tag-required">Required</span>
+            <span class="block-title">Core Information</span>
+          </div>
+
+          <div class="form-row-2col">
+            <!-- 1. Dimension Name (Mandatory) -->
+            <div class="field">
+              <label for="dimensionNameInput" class="field-label">
+                Dimension Name <span class="req-mark">*</span>
+              </label>
+              <input
+                type="text"
+                id="dimensionNameInput"
+                class="text-input"
+                placeholder="Enter dimension name"
+                maxlength="80"
+                required
+              />
+            </div>
+
+            <!-- 2. Book & Quill Text (Mandatory) -->
+            <div class="field">
+              <label for="bookTextInput" class="field-label">
+                Book &amp; Quill Text <span class="req-mark">*</span>
+              </label>
+              <input
+                type="text"
+                id="bookTextInput"
+                class="text-input mono-input"
+                placeholder="Text written in the Book & Quill"
+                required
+              />
+              <div class="field-meta">
+                <code id="liveWarpCommand">/warp ...</code>
+                <span>Seed: <strong id="liveDimensionId">—</strong></span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 3. Description (Mandatory) -->
+          <div class="field">
+            <label for="descriptionInput" class="field-label">
+              Description <span class="req-mark">*</span>
+            </label>
+            <textarea
+              id="descriptionInput"
+              class="textarea-input"
+              rows="3"
+              placeholder="Describe the terrain, blocks, structures, sky color, and anomalies..."
+              required
+            ></textarea>
+          </div>
+
+          <!-- 4. Screenshots (Mandatory - At least 1) -->
+          <div class="field">
+            <div class="field-label-row">
+              <label class="field-label">
+                Screenshots <span class="req-mark">*</span>
+              </label>
+              <span class="counter-badge" id="imageCountPill">Min. 1 image required</span>
+            </div>
+
+            <div class="upload-dropzone" id="imageDropzone">
+              <input type="file" id="imageFileInput" accept="image/*" multiple hidden />
+              <div class="dropzone-inner">
+                <div class="dropzone-icon-wrap">
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+                </div>
+                <div class="dropzone-copy">
+                  <span class="dropzone-headline">Drop screenshots here, paste with <kbd>Ctrl+V</kbd>, or browse</span>
+                  <span class="dropzone-sub">PNG, JPG, WEBP, GIF — at least 1 image required</span>
+                </div>
+                <div class="dropzone-btns">
+                  <button type="button" class="btn btn-secondary btn-sm" id="browseImagesBtn">Browse Files</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="url-bar">
+              <input
+                type="url"
+                id="imageUrlInput"
+                class="text-input"
+                placeholder="Or paste an image URL (https://...)"
+              />
+              <button type="button" class="btn btn-secondary btn-sm" id="addImageUrlBtn">Add URL</button>
+            </div>
+
+            <div id="uploadedImagesGrid" class="thumbs-grid" aria-live="polite"></div>
+          </div>
+        </div>
+
+        <!-- OPTIONAL FIELDS -->
+        <div class="form-group-block">
+          <div class="block-header">
+            <span class="block-tag tag-optional">Optional</span>
+            <span class="block-title">Portal, Entities &amp; Discoverer</span>
+          </div>
+
+          <div class="form-row-2col">
+            <!-- 5. Portal Color (Optional) -->
+            <div class="field">
+              <div class="field-label-row">
+                <label for="portalColorPicker" class="field-label">Portal Color</label>
+                <button type="button" class="link-btn" id="clearPortalColorBtn">Clear</button>
+              </div>
+
+              <div class="color-control-box">
+                <div class="color-input-row">
+                  <div class="portal-live-swatch" id="portalLiveSwatch">
+                    <input
+                      type="color"
+                      id="portalColorPicker"
+                      value="#8b5cf6"
+                      aria-label="Choose portal color"
+                    />
+                  </div>
+                  <input
+                    type="text"
+                    id="portalColorHexInput"
+                    class="text-input mono-input"
+                    placeholder="#8b5cf6 (Optional)"
+                    maxlength="16"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <!-- 6. Player Nickname (Optional) -->
+            <div class="field">
+              <div class="field-label-row">
+                <label for="nicknameInput" class="field-label">Player Nickname</label>
+                <button type="button" class="link-btn" id="setAnonymousBtn">Set Anonymous</button>
+              </div>
+              <div class="nickname-row">
+                <div class="avatar-box" id="formAvatarPreview"></div>
+                <input
+                  type="text"
+                  id="nicknameInput"
+                  class="text-input"
+                  placeholder="Anonymous"
+                  value="Anonymous"
+                  maxlength="40"
+                />
+              </div>
+              <span class="field-help">Minecraft nickname of the player who discovered this dimension.</span>
+            </div>
+          </div>
+
+          <!-- 7. Spawning Entities (Optional) -->
+          <div class="field">
+            <div class="field-label-row">
+              <label for="customEntityInput" class="field-label">Spawning Entities</label>
+              <button type="button" class="link-btn" id="clearEntitiesBtn">Clear all</button>
+            </div>
+
+            <div class="entities-input-bar">
+              <input
+                type="text"
+                id="customEntityInput"
+                class="text-input"
+                placeholder="Type an entity name (e.g., Creeper, Enderman, Ender Dragon) and press Enter..."
+              />
+              <button type="button" class="btn btn-secondary btn-sm" id="addCustomEntityBtn">Add</button>
+            </div>
+
+            <div class="selected-tags" id="selectedEntitiesBox"></div>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-ghost" id="clearFormDraftBtn">Reset Form</button>
+          <div class="modal-footer-right">
+            <button type="button" class="btn btn-secondary" id="cancelAddModalBtn">Cancel</button>
+            <button type="submit" class="btn btn-primary" id="submitDimensionBtn">Save Dimension</button>
+          </div>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- POPUP MODAL: DIMENSION DETAIL VIEW                                    -->
+  <!-- ===================================================================== -->
+  <div
+    id="detailModal"
+    class="modal-backdrop"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="detailModalTitle"
+    hidden
+  >
+    <div class="modal-dialog modal-dialog-lg">
+      <div class="modal-header">
+        <div>
+          <h2 id="detailModalTitle">Dimension</h2>
+          <p class="modal-subtitle" id="detailModalMeta"></p>
+        </div>
+        <div class="modal-header-actions">
+          <button type="button" class="btn btn-secondary btn-sm" id="detailEditBtn">Edit</button>
+          <button type="button" class="btn btn-danger btn-sm" id="detailDeleteBtn">Delete</button>
+          <button type="button" class="icon-close-btn" id="closeDetailModalBtn" aria-label="Close">✕</button>
+        </div>
+      </div>
+
+      <div class="modal-body" id="detailModalContent"></div>
+    </div>
+  </div>
+
+  <div id="toastContainer" class="toast-stack" aria-live="assertive"></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
