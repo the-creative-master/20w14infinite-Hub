@@ -1,0 +1,4 @@
+node_modules/
+
+# Automatic rotating snapshots of the Hub (kept on the server, not in git)
+data/backups/

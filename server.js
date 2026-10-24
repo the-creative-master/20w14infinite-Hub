@@ -7,6 +7,9 @@ const PORT = parseInt(process.env.PORT || '3000', 10);
 const HOST = '0.0.0.0';
 const DATA_DIR = path.join(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'dimensions.json');
+const BACKUP_DIR = path.join(DATA_DIR, 'backups');
+const BACKUP_MAX_FILES = 30;
+const BACKUP_MIN_INTERVAL_MS = 60 * 1000;
 const ROOT_DIR = __dirname;
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
@@ -75,17 +78,92 @@ function ensureDataFile() {
   }
 }
 
+// Automatic rotating snapshots of the Hub. The main dimensions.json file is
+// the permanent home of everyone's dimensions; these backups protect it
+// against accidental deletion, a corrupted write, or a bad client sync.
+function backupDimensions(dimensions) {
+  try {
+    if (!Array.isArray(dimensions) || dimensions.length === 0) return;
+    if (!fs.existsSync(BACKUP_DIR)) {
+      fs.mkdirSync(BACKUP_DIR, { recursive: true });
+    }
+    const existing = fs
+      .readdirSync(BACKUP_DIR)
+      .filter((f) => f.startsWith('dimensions-') && f.endsWith('.json'))
+      .sort();
+    const newest = existing[existing.length - 1];
+    if (newest) {
+      const newestMtime = fs.statSync(path.join(BACKUP_DIR, newest)).mtimeMs;
+      if (Date.now() - newestMtime < BACKUP_MIN_INTERVAL_MS) return;
+    }
+    const stamp = new Date().toISOString().replace(/:/g, '-'); // Windows-safe name
+    const backupName = `dimensions-${stamp}.json`;
+    fs.writeFileSync(
+      path.join(BACKUP_DIR, backupName),
+      JSON.stringify(dimensions, null, 2),
+      'utf8'
+    );
+    const all = [...existing, backupName].sort();
+    while (all.length > BACKUP_MAX_FILES) {
+      const oldest = all.shift();
+      try {
+        fs.rmSync(path.join(BACKUP_DIR, oldest), { force: true });
+      } catch (_) {}
+    }
+  } catch (err) {
+    console.error('Failed to write dimensions backup:', err.message);
+  }
+}
+
+// If dimensions.json is ever missing or unparseable, restore the newest
+// readable backup instead of starting the Hub from scratch.
+function recoverFromBackups() {
+  try {
+    if (!fs.existsSync(BACKUP_DIR)) return null;
+    const backups = fs
+      .readdirSync(BACKUP_DIR)
+      .filter((f) => f.startsWith('dimensions-') && f.endsWith('.json'))
+      .sort()
+      .reverse();
+    for (const name of backups) {
+      try {
+        const parsed = JSON.parse(fs.readFileSync(path.join(BACKUP_DIR, name), 'utf8'));
+        if (!Array.isArray(parsed)) continue;
+        console.warn(
+          `dimensions.json was unreadable — recovered ${parsed.length} dimension(s) from backup ${name}`
+        );
+        fs.writeFileSync(DATA_FILE, JSON.stringify(parsed, null, 2), 'utf8');
+        return parsed
+          .filter((item) => item && !PRESET_IDS.has(item.id))
+          .map(normalizeRecord);
+      } catch (_) {
+        // Try the next-oldest backup.
+      }
+    }
+  } catch (_) {}
+  return null;
+}
+
 function readDimensions() {
-  ensureDataFile();
+  if (!fs.existsSync(DATA_FILE)) {
+    // A missing data file while backups exist means it was deleted —
+    // restore the newest snapshot instead of starting the Hub from scratch.
+    const recovered = recoverFromBackups();
+    if (recovered) return recovered;
+    ensureDataFile();
+    return [];
+  }
   try {
     const raw = fs.readFileSync(DATA_FILE, 'utf8');
     const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
+    if (!Array.isArray(parsed)) throw new Error('dimensions.json is not a JSON array');
     return parsed
       .filter((item) => item && !PRESET_IDS.has(item.id))
       .map(normalizeRecord);
   } catch (err) {
-    console.error('Error reading dimensions.json:', err);
+    console.error('Error reading dimensions.json:', err.message);
+    const recovered = recoverFromBackups();
+    if (recovered) return recovered;
     return [];
   }
 }
@@ -98,6 +176,7 @@ function writeDimensions(dimensions) {
   const tmpFile = `${DATA_FILE}.tmp`;
   fs.writeFileSync(tmpFile, JSON.stringify(normalized, null, 2), 'utf8');
   fs.renameSync(tmpFile, DATA_FILE);
+  backupDimensions(normalized);
   broadcastUpdate(normalized);
   return normalized;
 }
@@ -445,7 +524,6 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-ensureDataFile();
 writeDimensions(readDimensions());
 
 server.listen(PORT, HOST, () => {
